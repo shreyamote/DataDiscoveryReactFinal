@@ -1,4 +1,4 @@
-# backend/app.py
+
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import os
@@ -21,65 +21,54 @@ report_generator = PDFReportGenerator()
 
 @app.route('/api/process-local-files', methods=['POST'])
 def process_local_files():
-    # Ensure files are received correctly
     if 'files' not in request.files:
-        return jsonify({"error": "No files provided"}), 400
+        return jsonify({"error": "No files uploaded"}), 400
     
     files = request.files.getlist('files')
-    
     report_data = []
-    error_data = []  # To collect errors for problematic files
 
     for file in files:
         try:
-            # Process each file
+            # Save uploaded file temporarily
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
                 file.save(temp_file.name)
-                
-                # Process the file: Extract text and classify PII entities
-                detected_text = ocr_processor.detect_text(temp_file.name)
-                entities = pii_analyzer.classify_text(detected_text)
-                
-                # Filter out entities with confidence below threshold
-                filtered_entities = [
-                    entity for entity in entities if entity['confidence'] >= 0.10
-                ]
-                
-                if filtered_entities:  # Only add to report if valid entities exist
-                    report_data.append({
-                        "image_name": file.filename,
-                        "detected_text": detected_text,
-                        "entities": filtered_entities
-                    })
-                
-                os.unlink(temp_file.name)  # Delete temp file after processing
-        except Exception as e:
-            # Collect error for this specific file and continue
-            error_data.append({
-                "file": file.filename,
-                "error": str(e)
+                app.logger.info(f"Saved file: {file.filename}")
+
+            # Process file
+            detected_text = ocr_processor.detect_text(temp_file.name)
+            app.logger.info(f"Detected text: {detected_text}")
+
+            entities = pii_analyzer.classify_text(detected_text)
+            app.logger.info(f"Entities: {entities}")
+
+            report_data.append({
+                "image_name": file.filename, 
+                "detected_text": detected_text, 
+                "entities": entities
             })
+        except Exception as e:
+            app.logger.error(f"Error processing file {file.filename}: {str(e)}")
+            return jsonify({"error": f"Error processing file {file.filename}: {str(e)}"}), 500
+        finally:
+            # Cleanup temporary file
+            try:
+                os.unlink(temp_file.name)  # Delete temporary file
+            except Exception as e:
+                app.logger.error(f"Error deleting temporary file {temp_file.name}: {str(e)}")
 
-    # If no valid entities found and no errors, return a message
-    if not report_data and not error_data:
-        return jsonify({"message": "No valid PII detected in the files"}), 200
-
-    # Generate the report if valid data is available
-    report_filename = "PII_Report.pdf"
-    if report_data:
+    # Generate report
+    try:
+        report_filename = "PII_Report.pdf"
         report_generator.filename = report_filename
         report_generator.generate_report(report_data)
-    
-    response = {
-        "message": "Files processed successfully",
-        "report": report_filename if report_data else None,  # Report only if valid data exists
-        "errors": error_data  # Include errors in the response
-    }
+    except Exception as e:
+        app.logger.error(f"Error generating report: {str(e)}")
+        return jsonify({"error": "Error generating report"}), 500
 
     return jsonify({
-            "message": "local files processed successfully",
-            "report": report_filename
-        })
+        "message": "Files processed successfully",
+        "report": report_filename
+    })
 
 
 
